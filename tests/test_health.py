@@ -2,6 +2,7 @@ from fastapi.testclient import TestClient
 
 from app.main import app
 
+
 client = TestClient(app)
 
 
@@ -10,7 +11,8 @@ def test_root() -> None:
 
     assert response.status_code == 200
     assert response.json() == {
-        "message": "E-Commerce API is running"
+        "message": "E-Commerce API is running",
+        "environment": "development",
     }
 
 
@@ -19,5 +21,6 @@ def test_health_check() -> None:
 
     assert response.status_code == 200
     assert response.json() == {
-        "status": "healthy"
+        "status": "healthy",
+        "environment": "development",
     }
