@@ -6,8 +6,10 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class Settings(BaseSettings):
     app_name: str = "E-Commerce DevOps Platform"
     app_version: str = "1.0.0"
-    app_environment: str = "Development"
+    app_environment: str = "development"
     debug: bool = True
+
+    database_url: str
 
     model_config = SettingsConfigDict(
         env_file=".env",
