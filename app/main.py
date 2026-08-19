@@ -5,7 +5,7 @@ from sqlalchemy.orm import Session
 
 from app.config import get_settings
 from app.db.database import get_db
-
+from app.routers.products import router as products_router
 
 settings = get_settings()
 
@@ -14,6 +14,8 @@ app = FastAPI(
     version=settings.app_version,
     debug=settings.debug,
 )
+
+app.include_router(products_router)
 
 
 @app.get("/")
