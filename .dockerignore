@@ -6,3 +6,4 @@ __pycache__/
 .gitignore
 .env
 .env.docker
+.env.compose
