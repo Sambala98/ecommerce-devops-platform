@@ -11,6 +11,10 @@ from app.main import app
 
 
 from app.models.product import Product
+from app.models.order import Order
+from app.models.order_item import OrderItem
+from app.models.product_interaction import ProductInteraction
+from app.models.user import User
 
 
 settings = get_settings()
@@ -64,13 +68,21 @@ def client(database_session):
     app.dependency_overrides.clear()
     
 @pytest.fixture(autouse=True)
-def clean_products():
+def clean_database():
     with TestingSessionLocal() as session:
+        session.execute(delete(ProductInteraction))
+        session.execute(delete(OrderItem))
+        session.execute(delete(Order))
+        session.execute(delete(User))
         session.execute(delete(Product))
         session.commit()
 
     yield
 
     with TestingSessionLocal() as session:
+        session.execute(delete(ProductInteraction))
+        session.execute(delete(OrderItem))
+        session.execute(delete(Order))
+        session.execute(delete(User))
         session.execute(delete(Product))
         session.commit()
