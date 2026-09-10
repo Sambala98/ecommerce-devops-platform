@@ -48,7 +48,8 @@ jobs:
     env:
       DATABASE_URL: postgresql+psycopg://postgres:postgres@localhost:5432/ecommerce_db
       TEST_DATABASE_URL: postgresql+psycopg://postgres:postgres@localhost:5432/ecommerce_test_db
-
+      REDIS_URL: redis://localhost:6379/0
+      REDIS_CACHE_TTL: 300
 
     steps:
       - name: Checkout repository
