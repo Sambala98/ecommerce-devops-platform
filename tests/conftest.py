@@ -15,6 +15,8 @@ from app.models.order import Order
 from app.models.order_item import OrderItem
 from app.models.product_interaction import ProductInteraction
 from app.models.user import User
+from redis import Redis
+import app.cache.product_cache as product_cache_module
 
 
 settings = get_settings()
@@ -28,6 +30,15 @@ TestingSessionLocal = sessionmaker(
     bind=test_engine,
     autoflush=False,
     expire_on_commit=False,
+)
+
+test_redis_url = settings.redis_url.rsplit("/", 1)[0] + "/1"
+
+test_redis_client = Redis.from_url(
+    test_redis_url,
+    decode_responses=True,
+    socket_connect_timeout=1,
+    socket_timeout=1,
 )
 
 
@@ -86,3 +97,22 @@ def clean_database():
         session.execute(delete(User))
         session.execute(delete(Product))
         session.commit()
+
+@pytest.fixture(autouse=True)
+def isolate_redis_cache(monkeypatch):
+    monkeypatch.setattr(
+        product_cache_module,
+        "redis_client",
+        test_redis_client,
+    )
+
+    test_redis_client.flushdb()
+
+    yield
+
+    test_redis_client.flushdb()
+
+
+@pytest.fixture
+def redis_test_client():
+    return test_redis_client

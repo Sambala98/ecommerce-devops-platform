@@ -1,6 +1,13 @@
+from typing import Any
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
+
+from app.cache.product_cache import (
+    get_cached_product,
+    invalidate_product_cache,
+    set_cached_product,
+)
 
 from app.models.product import Product
 from app.schemas.product import ProductCreate, ProductUpdate
@@ -71,6 +78,23 @@ def get_product(
         )
 
     return product
+def get_product_for_read(
+    database_session: Session,
+    product_id: int,
+) -> Product | dict[str, Any]:
+    cached_product = get_cached_product(product_id)
+
+    if cached_product is not None:
+        return cached_product
+
+    product = get_product(
+        database_session=database_session,
+        product_id=product_id,
+    )
+
+    set_cached_product(product)
+
+    return product
 
 
 def update_product(
@@ -92,6 +116,7 @@ def update_product(
 
     database_session.commit()
     database_session.refresh(product)
+    invalidate_product_cache(product_id)
 
     return product
 
@@ -107,3 +132,4 @@ def delete_product(
 
     database_session.delete(product)
     database_session.commit()
+    invalidate_product_cache(product_id)

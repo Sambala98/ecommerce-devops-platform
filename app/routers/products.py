@@ -14,7 +14,7 @@ from app.services.product_service import (
     ProductNotFoundError,
     create_product,
     delete_product,
-    get_product,
+    get_product_for_read,
     list_products,
     update_product,
 )
@@ -84,7 +84,7 @@ def get_product_endpoint(
     database_session: DatabaseSession,
 ) -> ProductResponse:
     try:
-        return get_product(
+        return get_product_for_read(
             database_session=database_session,
             product_id=product_id,
         )
