@@ -2,7 +2,7 @@ from decimal import Decimal
 
 from sqlalchemy import select
 
-from app.models.order import Order
+from app.models.order import Order, OrderStatus
 from app.models.order_item import OrderItem
 from app.models.product import Product
 from app.models.product_interaction import (
@@ -45,6 +45,29 @@ def create_test_product(
     database_session.refresh(product)
 
     return product
+def create_test_order(
+    client,
+    database_session,
+):
+    user = create_test_user(database_session)
+    product = create_test_product(database_session)
+
+    response = client.post(
+        "/orders",
+        json={
+            "user_id": user.id,
+            "items": [
+                {
+                    "product_id": product.id,
+                    "quantity": 1,
+                }
+            ],
+        },
+    )
+
+    assert response.status_code == 201
+
+    return response.json()
 
 
 def test_create_order_success(client, database_session):
@@ -321,3 +344,191 @@ def test_get_order(client, database_session):
     assert data["id"] == order_id
     assert data["user_id"] == user.id
     assert len(data["items"]) == 1
+
+def test_order_status_full_lifecycle(
+    client,
+    database_session,
+):
+    order = create_test_order(
+        client,
+        database_session,
+    )
+
+    order_id = order["id"]
+
+    assert order["status"] == "PENDING"
+
+    response = client.patch(
+        f"/orders/{order_id}/status",
+        json={"status": "CONFIRMED"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "CONFIRMED"
+
+    response = client.patch(
+        f"/orders/{order_id}/status",
+        json={"status": "SHIPPED"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "SHIPPED"
+
+    response = client.patch(
+        f"/orders/{order_id}/status",
+        json={"status": "DELIVERED"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "DELIVERED"
+
+    database_session.expire_all()
+
+    persisted_order = database_session.get(
+        Order,
+        order_id,
+    )
+
+    assert persisted_order is not None
+    assert persisted_order.status == OrderStatus.DELIVERED
+
+
+def test_pending_order_can_be_cancelled(
+    client,
+    database_session,
+):
+    order = create_test_order(
+        client,
+        database_session,
+    )
+
+    response = client.patch(
+        f"/orders/{order['id']}/status",
+        json={"status": "CANCELLED"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "CANCELLED"
+
+
+def test_pending_to_delivered_returns_409(
+    client,
+    database_session,
+):
+    order = create_test_order(
+        client,
+        database_session,
+    )
+
+    response = client.patch(
+        f"/orders/{order['id']}/status",
+        json={"status": "DELIVERED"},
+    )
+
+    assert response.status_code == 409
+
+    assert response.json()["detail"] == (
+        f"Cannot change order {order['id']} "
+        "from PENDING to DELIVERED"
+    )
+
+
+def test_delivered_order_is_terminal(
+    client,
+    database_session,
+):
+    order = create_test_order(
+        client,
+        database_session,
+    )
+
+    order_id = order["id"]
+
+    client.patch(
+        f"/orders/{order_id}/status",
+        json={"status": "CONFIRMED"},
+    )
+
+    client.patch(
+        f"/orders/{order_id}/status",
+        json={"status": "SHIPPED"},
+    )
+
+    client.patch(
+        f"/orders/{order_id}/status",
+        json={"status": "DELIVERED"},
+    )
+
+    response = client.patch(
+        f"/orders/{order_id}/status",
+        json={"status": "PENDING"},
+    )
+
+    assert response.status_code == 409
+
+    assert response.json()["detail"] == (
+        f"Cannot change order {order_id} "
+        "from DELIVERED to PENDING"
+    )
+
+
+def test_cancelled_order_is_terminal(
+    client,
+    database_session,
+):
+    order = create_test_order(
+        client,
+        database_session,
+    )
+
+    order_id = order["id"]
+
+    cancel_response = client.patch(
+        f"/orders/{order_id}/status",
+        json={"status": "CANCELLED"},
+    )
+
+    assert cancel_response.status_code == 200
+
+    response = client.patch(
+        f"/orders/{order_id}/status",
+        json={"status": "CONFIRMED"},
+    )
+
+    assert response.status_code == 409
+
+    assert response.json()["detail"] == (
+        f"Cannot change order {order_id} "
+        "from CANCELLED to CONFIRMED"
+    )
+
+
+def test_update_status_missing_order_returns_404(
+    client,
+):
+    response = client.patch(
+        "/orders/999999/status",
+        json={"status": "CONFIRMED"},
+    )
+
+    assert response.status_code == 404
+    assert response.json()["detail"] == (
+        "Order 999999 not found"
+    )
+
+
+def test_invalid_order_status_returns_422(
+    client,
+    database_session,
+):
+    order = create_test_order(
+        client,
+        database_session,
+    )
+
+    response = client.patch(
+        f"/orders/{order['id']}/status",
+        json={"status": "READY_FOR_PICKUP"},
+    )
+
+    assert response.status_code == 422

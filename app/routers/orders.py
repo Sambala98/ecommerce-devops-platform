@@ -2,15 +2,22 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
 from app.db.database import get_db
-from app.schemas.order import OrderCreate, OrderResponse
+from app.schemas.order import (
+    OrderCreate,
+    OrderResponse,
+    OrderStatusUpdate,
+)
 from app.services.order_service import (
     EmptyOrderError,
     InsufficientStockError,
+    InvalidOrderStatusTransitionError,
+    OrderNotFoundError,
     ProductNotFoundError,
     UserNotFoundError,
     create_order,
     get_order,
     get_orders,
+    update_order_status,
 )
 
 
@@ -90,3 +97,30 @@ def get_order_endpoint(
         )
 
     return order
+@router.patch(
+    "/{order_id}/status",
+    response_model=OrderResponse,
+)
+def update_order_status_endpoint(
+    order_id: int,
+    status_data: OrderStatusUpdate,
+    db: Session = Depends(get_db),
+):
+    try:
+        return update_order_status(
+            db=db,
+            order_id=order_id,
+            status_data=status_data,
+        )
+
+    except OrderNotFoundError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(exc),
+        ) from exc
+
+    except InvalidOrderStatusTransitionError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=str(exc),
+        ) from exc

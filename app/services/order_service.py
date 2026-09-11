@@ -3,7 +3,7 @@ from decimal import Decimal
 from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 
-from app.models.order import Order
+from app.models.order import Order, OrderStatus
 from app.models.order_item import OrderItem
 from app.models.product import Product
 from app.models.product_interaction import (
@@ -11,7 +11,7 @@ from app.models.product_interaction import (
     ProductInteraction,
 )
 from app.models.user import User
-from app.schemas.order import OrderCreate
+from app.schemas.order import OrderCreate, OrderStatusUpdate
 
 
 class UserNotFoundError(Exception):
@@ -29,6 +29,28 @@ class InsufficientStockError(Exception):
 class EmptyOrderError(Exception):
     pass
 
+
+class OrderNotFoundError(Exception):
+    pass
+
+
+class InvalidOrderStatusTransitionError(Exception):
+    pass
+
+VALID_ORDER_STATUS_TRANSITIONS = {
+    OrderStatus.PENDING: {
+        OrderStatus.CONFIRMED,
+        OrderStatus.CANCELLED,
+    },
+    OrderStatus.CONFIRMED: {
+        OrderStatus.SHIPPED,
+    },
+    OrderStatus.SHIPPED: {
+        OrderStatus.DELIVERED,
+    },
+    OrderStatus.DELIVERED: set(),
+    OrderStatus.CANCELLED: set(),
+}
 
 def create_order(
     db: Session,
@@ -148,3 +170,46 @@ def get_orders(
     )
 
     return list(result.scalars().all())
+
+def update_order_status(
+    db: Session,
+    order_id: int,
+    status_data: OrderStatusUpdate,
+) -> Order:
+
+    order = get_order(
+        db,
+        order_id,
+    )
+
+    if order is None:
+        raise OrderNotFoundError(
+            f"Order {order_id} not found"
+        )
+
+    allowed_statuses = VALID_ORDER_STATUS_TRANSITIONS[
+        order.status
+    ]
+
+    if status_data.status not in allowed_statuses:
+        raise InvalidOrderStatusTransitionError(
+            f"Cannot change order {order_id} "
+            f"from {order.status.value} "
+            f"to {status_data.status.value}"
+        )
+
+    order.status = status_data.status
+
+    db.commit()
+
+    updated_order = get_order(
+        db,
+        order_id,
+    )
+
+    if updated_order is None:
+        raise OrderNotFoundError(
+            f"Order {order_id} not found"
+        )
+
+    return updated_order
