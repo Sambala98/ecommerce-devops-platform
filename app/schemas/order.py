@@ -10,6 +10,13 @@ class OrderItemCreate(BaseModel):
     product_id: int
     quantity: int = Field(gt=0)
 
+class OrderCreateRequest(BaseModel):
+    items: list[OrderItemCreate]
+
+    model_config = ConfigDict(
+        extra="forbid",
+    )
+
 
 class OrderCreate(BaseModel):
     user_id: int

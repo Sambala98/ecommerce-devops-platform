@@ -170,6 +170,20 @@ def get_orders(
     )
 
     return list(result.scalars().all())
+def get_orders_for_user(
+    db: Session,
+    user_id: int,
+) -> list[Order]:
+    result = db.execute(
+        select(Order)
+        .options(selectinload(Order.items))
+        .where(Order.user_id == user_id)
+        .order_by(Order.id)
+    )
+
+    return list(
+        result.scalars().unique().all()
+    )
 
 def update_order_status(
     db: Session,

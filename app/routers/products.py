@@ -1,3 +1,5 @@
+from app.models.user import User
+from app.security.dependencies import require_admin
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
@@ -29,7 +31,10 @@ DatabaseSession = Annotated[
     Session,
     Depends(get_db),
 ]
-
+AdminUser = Annotated[
+    User,
+    Depends(require_admin),
+]
 
 @router.post(
     "",
@@ -39,6 +44,7 @@ DatabaseSession = Annotated[
 def create_product_endpoint(
     product_data: ProductCreate,
     database_session: DatabaseSession,
+    current_admin: AdminUser,
 ) -> ProductResponse:
     try:
         return create_product(
@@ -103,6 +109,7 @@ def update_product_endpoint(
     product_id: int,
     product_data: ProductUpdate,
     database_session: DatabaseSession,
+    current_admin: AdminUser,
 ) -> ProductResponse:
     try:
         return update_product(
@@ -124,6 +131,7 @@ def update_product_endpoint(
 def delete_product_endpoint(
     product_id: int,
     database_session: DatabaseSession,
+    current_admin: AdminUser,
 ) -> Response:
     try:
         delete_product(

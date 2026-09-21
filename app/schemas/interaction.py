@@ -5,23 +5,30 @@ from pydantic import BaseModel, ConfigDict, field_validator
 from app.models.product_interaction import InteractionType
 
 
-class InteractionCreate(BaseModel):
-    user_id: int
+class InteractionCreateRequest(BaseModel):
     product_id: int
     interaction_type: InteractionType
 
+    model_config = ConfigDict(
+        extra="forbid",
+    )
+
     @field_validator("interaction_type")
     @classmethod
-    def prevent_manual_purchase(
+    def reject_manual_purchase(
         cls,
-        interaction_type: InteractionType,
+        value: InteractionType,
     ) -> InteractionType:
-        if interaction_type == InteractionType.PURCHASE:
+        if value == InteractionType.PURCHASE:
             raise ValueError(
                 "PURCHASE interactions are created automatically through orders"
             )
 
-        return interaction_type
+        return value
+
+
+class InteractionCreate(InteractionCreateRequest):
+    user_id: int
 
 
 class InteractionResponse(BaseModel):
