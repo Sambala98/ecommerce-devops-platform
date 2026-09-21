@@ -670,16 +670,32 @@ def test_order_status_full_lifecycle(
     )
 
 
+
 def test_pending_order_can_be_cancelled(
     client,
     database_session,
     user_headers,
     admin_headers,
 ):
-    order, _ = create_test_order(
+    order, product = create_test_order(
         client,
         database_session,
         user_headers,
+        quantity=2,
+    )
+
+    database_session.expire_all()
+
+    product_after_order = (
+        database_session.get(
+            Product,
+            product.id,
+        )
+    )
+
+    assert (
+        product_after_order.stock_quantity
+        == 8
     )
 
     response = client.patch(
@@ -697,7 +713,80 @@ def test_pending_order_can_be_cancelled(
         == "CANCELLED"
     )
 
+    database_session.expire_all()
 
+    restored_product = (
+        database_session.get(
+            Product,
+            product.id,
+        )
+    )
+
+    assert (
+        restored_product.stock_quantity
+        == 10
+    )
+
+def test_cancelled_order_does_not_restore_stock_twice(
+    client,
+    database_session,
+    user_headers,
+    admin_headers,
+):
+    order, product = create_test_order(
+        client,
+        database_session,
+        user_headers,
+        quantity=2,
+    )
+
+    first_response = client.patch(
+        f"/orders/{order['id']}/status",
+        headers=admin_headers,
+        json={
+            "status": "CANCELLED",
+        },
+    )
+
+    assert first_response.status_code == 200
+
+    database_session.expire_all()
+
+    restored_product = (
+        database_session.get(
+            Product,
+            product.id,
+        )
+    )
+
+    assert (
+        restored_product.stock_quantity
+        == 10
+    )
+
+    second_response = client.patch(
+        f"/orders/{order['id']}/status",
+        headers=admin_headers,
+        json={
+            "status": "CANCELLED",
+        },
+    )
+
+    assert second_response.status_code == 409
+
+    database_session.expire_all()
+
+    product_after_second_attempt = (
+        database_session.get(
+            Product,
+            product.id,
+        )
+    )
+
+    assert (
+        product_after_second_attempt.stock_quantity
+        == 10
+    )
 def test_pending_to_delivered_returns_409(
     client,
     database_session,

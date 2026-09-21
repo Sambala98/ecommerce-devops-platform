@@ -191,30 +191,93 @@ def update_order_status(
     status_data: OrderStatusUpdate,
 ) -> Order:
 
-    order = get_order(
-        db,
-        order_id,
+    result = db.execute(
+        select(Order)
+        .options(
+            selectinload(Order.items)
+        )
+        .where(
+            Order.id == order_id
+        )
+        .with_for_update()
     )
 
+    order = result.scalar_one_or_none()
+
     if order is None:
+        db.rollback()
+
         raise OrderNotFoundError(
             f"Order {order_id} not found"
         )
 
-    allowed_statuses = VALID_ORDER_STATUS_TRANSITIONS[
-        order.status
-    ]
+    allowed_statuses = (
+        VALID_ORDER_STATUS_TRANSITIONS[
+            order.status
+        ]
+    )
 
-    if status_data.status not in allowed_statuses:
+    if (
+        status_data.status
+        not in allowed_statuses
+    ):
+        db.rollback()
+
         raise InvalidOrderStatusTransitionError(
             f"Cannot change order {order_id} "
             f"from {order.status.value} "
             f"to {status_data.status.value}"
         )
 
+    if (
+        status_data.status
+        == OrderStatus.CANCELLED
+    ):
+        product_ids = sorted(
+            {
+                item.product_id
+                for item in order.items
+            }
+        )
+
+        if product_ids:
+            product_result = db.execute(
+                select(Product)
+                .where(
+                    Product.id.in_(
+                        product_ids
+                    )
+                )
+                .order_by(Product.id)
+                .with_for_update()
+            )
+
+            products = list(
+                product_result.scalars().all()
+            )
+
+            products_by_id = {
+                product.id: product
+                for product in products
+            }
+
+            for item in order.items:
+                product = products_by_id[
+                    item.product_id
+                ]
+
+                product.stock_quantity += (
+                    item.quantity
+                )
+
     order.status = status_data.status
 
-    db.commit()
+    try:
+        db.commit()
+
+    except Exception:
+        db.rollback()
+        raise
 
     updated_order = get_order(
         db,
