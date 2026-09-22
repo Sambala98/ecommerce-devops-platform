@@ -305,3 +305,6 @@ def auth_headers_for():
         }
 
     return _auth_headers_for
+@pytest.fixture
+def session_factory():
+    return TestingSessionLocal

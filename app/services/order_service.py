@@ -56,90 +56,117 @@ def create_order(
     db: Session,
     order_data: OrderCreate,
 ) -> Order:
-
-    if not order_data.items:
-        raise EmptyOrderError(
-            "Order must contain at least one item"
-        )
-
-    user = db.get(User, order_data.user_id)
-
-    if user is None:
-        raise UserNotFoundError(
-            f"User {order_data.user_id} not found"
-        )
-
-    order = Order(
-        user_id=user.id,
-        total_amount=Decimal("0.00"),
-    )
-
-    db.add(order)
-    db.flush()
-
-    total_amount = Decimal("0.00")
-
-    for item_data in order_data.items:
-
-        product = db.get(
-            Product,
-            item_data.product_id,
-        )
-
-        if product is None:
-            db.rollback()
-
-            raise ProductNotFoundError(
-                f"Product {item_data.product_id} not found"
-            )
-
-        if product.stock_quantity < item_data.quantity:
-            db.rollback()
-
-            raise InsufficientStockError(
-                f"Insufficient stock for product {product.id}"
-            )
-
-        unit_price = product.price
-
-        line_total = (
-            unit_price * item_data.quantity
-        )
-
-        total_amount += line_total
-
-        order_item = OrderItem(
-            order_id=order.id,
-            product_id=product.id,
-            quantity=item_data.quantity,
-            unit_price=unit_price,
-        )
-
-        db.add(order_item)
-
-        product.stock_quantity -= item_data.quantity
-
-        interaction = ProductInteraction(
-            user_id=user.id,
-            product_id=product.id,
-            interaction_type=InteractionType.PURCHASE,
-        )
-
-        db.add(interaction)
-
-    order.total_amount = total_amount
-
     try:
+        if not order_data.items:
+            raise EmptyOrderError(
+                "Order must contain at least one item"
+            )
+
+        user = db.get(User, order_data.user_id)
+
+        if user is None:
+            raise UserNotFoundError(
+                f"User {order_data.user_id} not found"
+            )
+
+        # Combine requested quantities for stock validation.
+        # Preserve the original order lines below.
+        quantities_by_product: dict[int, int] = {}
+
+        for item_data in order_data.items:
+            product_id = item_data.product_id
+
+            quantities_by_product[product_id] = (
+                quantities_by_product.get(product_id, 0)
+                + item_data.quantity
+            )
+
+        product_ids = sorted(quantities_by_product)
+
+        # Lock products before checking or changing inventory.
+        # Refresh objects already loaded in this Session.
+        product_result = db.execute(
+            select(Product)
+            .where(Product.id.in_(product_ids))
+            .order_by(Product.id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+
+        products_by_id = {
+            product.id: product
+            for product in product_result.scalars().all()
+        }
+
+        # Validate every product before creating the order.
+        for product_id in product_ids:
+            product = products_by_id.get(product_id)
+
+            if product is None:
+                raise ProductNotFoundError(
+                    f"Product {product_id} not found"
+                )
+
+            requested_quantity = quantities_by_product[
+                product_id
+            ]
+
+            if product.stock_quantity < requested_quantity:
+                raise InsufficientStockError(
+                    f"Insufficient stock for product {product.id}"
+                )
+
+        order = Order(
+            user_id=user.id,
+            total_amount=Decimal("0.00"),
+        )
+
+        db.add(order)
+        db.flush()
+
+        total_amount = Decimal("0.00")
+
+        for item_data in order_data.items:
+            product = products_by_id[item_data.product_id]
+            unit_price = product.price
+
+            total_amount += (
+                unit_price * item_data.quantity
+            )
+
+            db.add(
+                OrderItem(
+                    order_id=order.id,
+                    product_id=product.id,
+                    quantity=item_data.quantity,
+                    unit_price=unit_price,
+                )
+            )
+
+            product.stock_quantity -= item_data.quantity
+
+            db.add(
+                ProductInteraction(
+                    user_id=user.id,
+                    product_id=product.id,
+                    interaction_type=InteractionType.PURCHASE,
+                )
+            )
+
+        order.total_amount = total_amount
+        order_id = order.id
+
         db.commit()
 
     except Exception:
         db.rollback()
         raise
 
+    # This read happens after the write transaction committed.
     result = db.execute(
         select(Order)
         .options(selectinload(Order.items))
-        .where(Order.id == order.id)
+        .where(Order.id == order_id)
     )
 
     return result.scalar_one()
