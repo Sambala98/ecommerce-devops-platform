@@ -3,7 +3,7 @@ from app.security.dependencies import (
     get_current_user,
     require_admin,
 )
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, Header, HTTPException, status
 from sqlalchemy.orm import Session
 
 from app.db.database import get_db
@@ -16,6 +16,7 @@ from app.schemas.order import (
 from app.services.order_service import (
     EmptyOrderError,
     InsufficientStockError,
+    IdempotencyConflictError,
     InvalidOrderStatusTransitionError,
     OrderNotFoundError,
     ProductNotFoundError,
@@ -44,6 +45,13 @@ def create_order_endpoint(
     order_data: OrderCreateRequest,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
+    idempotency_key: str | None = Header(
+        default=None,
+        alias="Idempotency-Key",
+        min_length=1,
+        max_length=128,
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]*$",
+    ),
 ):
     service_order_data = OrderCreate(
         user_id=current_user.id,
@@ -54,6 +62,7 @@ def create_order_endpoint(
         return create_order(
             db,
             service_order_data,
+            idempotency_key=idempotency_key,
         )
 
     except UserNotFoundError as exc:
@@ -77,6 +86,11 @@ def create_order_endpoint(
     except EmptyOrderError as exc:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(exc),
+        ) from exc
+    except IdempotencyConflictError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
             detail=str(exc),
         ) from exc
 

@@ -2,7 +2,16 @@ from datetime import datetime
 from decimal import Decimal
 from enum import Enum
 
-from sqlalchemy import DateTime, Enum as SqlEnum, ForeignKey, Numeric, func
+from sqlalchemy import (
+    CheckConstraint,
+    DateTime,
+    Enum as SqlEnum,
+    ForeignKey,
+    Numeric,
+    String,
+    UniqueConstraint,
+    func,
+)
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.database import Base
@@ -18,6 +27,27 @@ class OrderStatus(str, Enum):
 
 class Order(Base):
     __tablename__ = "orders"
+    __table_args__ = (
+        UniqueConstraint(
+            "user_id",
+            "idempotency_key",
+            name="uq_orders_user_id_idempotency_key",
+        ),
+        CheckConstraint(
+            """
+            (
+                idempotency_key IS NULL
+                AND idempotency_request_hash IS NULL
+            )
+            OR
+            (
+                idempotency_key IS NOT NULL
+                AND idempotency_request_hash IS NOT NULL
+            )
+            """,
+            name="ck_orders_idempotency_fields_paired",
+        ),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True)
 
@@ -26,7 +56,15 @@ class Order(Base):
         nullable=False,
         index=True,
     )
+    idempotency_key: Mapped[str | None] = mapped_column(
+        String(128),
+        nullable=True,
+    )
 
+    idempotency_request_hash: Mapped[str | None] = mapped_column(
+        String(64),
+        nullable=True,
+    )
     status: Mapped[OrderStatus] = mapped_column(
         SqlEnum(OrderStatus),
         default=OrderStatus.PENDING,

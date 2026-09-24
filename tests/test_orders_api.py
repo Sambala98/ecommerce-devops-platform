@@ -1,3 +1,4 @@
+import pytest
 from decimal import Decimal
 
 from sqlalchemy import select
@@ -940,3 +941,173 @@ def test_invalid_order_status_returns_422(
     )
 
     assert response.status_code == 422
+def test_idempotent_retry_returns_order_when_stock_is_zero(
+    client,
+    database_session,
+    user_headers,
+):
+    product = create_test_product(
+        database_session,
+        stock_quantity=1,
+    )
+    headers = {
+        **user_headers,
+        "Idempotency-Key": "checkout-retry",
+    }
+    payload = {
+        "items": [
+            {"product_id": product.id, "quantity": 1}
+        ]
+    }
+
+    first = client.post("/orders", headers=headers, json=payload)
+    second = client.post("/orders", headers=headers, json=payload)
+
+    assert first.status_code == 201, first.text
+    assert second.status_code == 201, second.text
+    assert first.json()["id"] == second.json()["id"]
+
+    database_session.expire_all()
+    assert database_session.get(
+        Product, product.id
+    ).stock_quantity == 0
+
+    assert len(database_session.scalars(select(Order)).all()) == 1
+    assert len(database_session.scalars(select(OrderItem)).all()) == 1
+    assert len(
+        database_session.scalars(select(ProductInteraction)).all()
+    ) == 1
+
+
+def test_same_key_with_changed_quantity_returns_409(
+    client,
+    database_session,
+    user_headers,
+):
+    product = create_test_product(database_session)
+    headers = {
+        **user_headers,
+        "Idempotency-Key": "checkout-conflict",
+    }
+
+    first = client.post(
+        "/orders",
+        headers=headers,
+        json={"items": [{"product_id": product.id, "quantity": 1}]},
+    )
+    second = client.post(
+        "/orders",
+        headers=headers,
+        json={"items": [{"product_id": product.id, "quantity": 2}]},
+    )
+
+    assert first.status_code == 201
+    assert second.status_code == 409
+    assert second.json()["detail"] == (
+        "Idempotency-Key was already used "
+        "with different order contents"
+    )
+
+    database_session.expire_all()
+    assert database_session.get(
+        Product, product.id
+    ).stock_quantity == 9
+    assert len(database_session.scalars(select(Order)).all()) == 1
+
+
+def test_same_key_is_scoped_to_authenticated_user(
+    client,
+    database_session,
+    user_headers,
+    make_user,
+    auth_headers_for,
+):
+    product = create_test_product(database_session)
+    other_user = make_user(email="idempotency-other@example.com")
+
+    payload = {
+        "items": [{"product_id": product.id, "quantity": 1}]
+    }
+
+    first = client.post(
+        "/orders",
+        headers={**user_headers, "Idempotency-Key": "shared-key"},
+        json=payload,
+    )
+    second = client.post(
+        "/orders",
+        headers={
+            **auth_headers_for(other_user),
+            "Idempotency-Key": "shared-key",
+        },
+        json=payload,
+    )
+
+    assert first.status_code == 201
+    assert second.status_code == 201
+    assert first.json()["id"] != second.json()["id"]
+    assert first.json()["user_id"] != second.json()["user_id"]
+
+    database_session.expire_all()
+    assert database_session.get(
+        Product, product.id
+    ).stock_quantity == 8
+
+
+def test_failed_order_does_not_consume_idempotency_key(
+    client,
+    database_session,
+    user_headers,
+):
+    product = create_test_product(
+        database_session,
+        stock_quantity=0,
+    )
+    product_id = product.id
+    headers = {
+        **user_headers,
+        "Idempotency-Key": "retry-after-restock",
+    }
+    payload = {
+        "items": [{"product_id": product_id, "quantity": 1}]
+    }
+
+    first = client.post("/orders", headers=headers, json=payload)
+    assert first.status_code == 409
+    assert database_session.scalars(select(Order)).all() == []
+
+    product = database_session.get(Product, product_id)
+    product.stock_quantity = 1
+    database_session.commit()
+
+    second = client.post("/orders", headers=headers, json=payload)
+    assert second.status_code == 201
+
+    database_session.expire_all()
+    assert database_session.get(
+        Product, product_id
+    ).stock_quantity == 0
+    assert len(database_session.scalars(select(Order)).all()) == 1
+
+
+@pytest.mark.parametrize("key", ["contains spaces", "x" * 129])
+def test_invalid_idempotency_key_returns_422(
+    client,
+    database_session,
+    user_headers,
+    key,
+):
+    product = create_test_product(database_session)
+
+    response = client.post(
+        "/orders",
+        headers={**user_headers, "Idempotency-Key": key},
+        json={
+            "items": [
+                {"product_id": product.id, "quantity": 1}
+            ]
+        },
+    )
+
+    assert response.status_code == 422
+    assert database_session.scalars(select(Order)).all() == []

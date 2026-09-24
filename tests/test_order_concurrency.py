@@ -14,6 +14,7 @@ from app.schemas.order import OrderCreate, OrderItemCreate
 from app.services.order_service import (
     InsufficientStockError,
     create_order,
+    IdempotencyConflictError
 )
 
 
@@ -212,3 +213,113 @@ def test_concurrent_orders_preserve_inventory(
             .where(ProductInteraction.product_id == product_id)
         )
         assert interaction_count == expected_created
+@pytest.mark.parametrize(
+    "second_quantity",
+    [
+        pytest.param(1, id="same-key-same-contents"),
+        pytest.param(2, id="same-key-different-contents"),
+    ],
+)
+def test_concurrent_idempotency(
+    database_session,
+    session_factory,
+    test_user,
+    second_quantity,
+):
+    user_id = test_user.id
+    product = Product(
+        name="Idempotency Product",
+        sku="IDEMPOTENCY-CONCURRENT",
+        price=Decimal("25.00"),
+        stock_quantity=2,
+        is_active=True,
+    )
+    database_session.add(product)
+    database_session.commit()
+    product_id = product.id
+
+    pid_queue = Queue()
+
+    def place_order(quantity):
+        with session_factory() as db:
+            db.execute(text("SET LOCAL lock_timeout = '15s'"))
+            db.execute(text("SET LOCAL statement_timeout = '20s'"))
+            pid_queue.put(
+                db.scalar(text("SELECT pg_backend_pid()"))
+            )
+
+            try:
+                order = create_order(
+                    db,
+                    OrderCreate(
+                        user_id=user_id,
+                        items=[
+                            OrderItemCreate(
+                                product_id=product_id,
+                                quantity=quantity,
+                            )
+                        ],
+                    ),
+                    idempotency_key="simultaneous-checkout",
+                )
+            except IdempotencyConflictError:
+                return "conflict", None
+
+            return "ok", order.id
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        with session_factory() as holder:
+            try:
+                holder.execute(
+                    select(Product)
+                    .where(Product.id == product_id)
+                    .with_for_update()
+                ).scalar_one()
+
+                futures = [
+                    executor.submit(place_order, quantity)
+                    for quantity in (1, second_quantity)
+                ]
+                pids = [pid_queue.get(timeout=5) for _ in futures]
+
+                assert len(set(pids)) == 2
+
+                wait_until_both_buyers_are_blocked(
+                    session_factory,
+                    pids,
+                    futures,
+                )
+                holder.commit()
+            finally:
+                holder.rollback()
+
+        outcomes = [future.result(timeout=10) for future in futures]
+
+    successful_ids = [
+        order_id
+        for outcome, order_id in outcomes
+        if outcome == "ok"
+    ]
+
+    expected_successes = 2 if second_quantity == 1 else 1
+    assert len(successful_ids) == expected_successes
+    assert len(set(successful_ids)) == 1
+    assert sum(
+        outcome == "conflict" for outcome, _ in outcomes
+    ) == 2 - expected_successes
+
+    with session_factory() as verify:
+        order = verify.execute(select(Order)).scalar_one()
+        item = verify.execute(select(OrderItem)).scalar_one()
+
+        assert order.id == successful_ids[0]
+        assert item.order_id == order.id
+        assert order.idempotency_key == "simultaneous-checkout"
+        assert order.total_amount == Decimal("25.00") * item.quantity
+        assert verify.get(
+            Product, product_id
+        ).stock_quantity == 2 - item.quantity
+
+        assert verify.scalar(
+            select(func.count()).select_from(ProductInteraction)
+        ) == 1
