@@ -17,6 +17,7 @@ from app.models.product_interaction import (
 )
 from app.models.user import User
 from app.schemas.order import OrderCreate, OrderStatusUpdate
+from app.cache.product_cache import invalidate_product_cache
 
 class UserNotFoundError(Exception):
     pass
@@ -279,6 +280,7 @@ def create_order(
             )
 
             product.stock_quantity -= item_data.quantity
+            product.reserved_quantity += item_data.quantity
 
             db.add(
                 ProductInteraction(
@@ -296,7 +298,8 @@ def create_order(
     except Exception:
         db.rollback()
         raise
-
+    for product_id in product_ids:
+        invalidate_product_cache(product_id)
     return db.execute(
         select(Order)
         .options(selectinload(Order.items))
@@ -348,99 +351,95 @@ def update_order_status(
     order_id: int,
     status_data: OrderStatusUpdate,
 ) -> Order:
+    changed_product_ids: list[int] = []
 
-    result = db.execute(
-        select(Order)
-        .options(
-            selectinload(Order.items)
-        )
-        .where(
-            Order.id == order_id
-        )
-        .with_for_update()
-    )
+    try:
+        order = db.execute(
+            select(Order)
+            .options(selectinload(Order.items))
+            .where(Order.id == order_id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        ).scalar_one_or_none()
 
-    order = result.scalar_one_or_none()
+        if order is None:
+            raise OrderNotFoundError(
+                f"Order {order_id} not found"
+            )
 
-    if order is None:
-        db.rollback()
-
-        raise OrderNotFoundError(
-            f"Order {order_id} not found"
-        )
-
-    allowed_statuses = (
-        VALID_ORDER_STATUS_TRANSITIONS[
+        next_status = status_data.status
+        allowed_statuses = VALID_ORDER_STATUS_TRANSITIONS[
             order.status
         ]
-    )
 
-    if (
-        status_data.status
-        not in allowed_statuses
-    ):
-        db.rollback()
+        if next_status not in allowed_statuses:
+            raise InvalidOrderStatusTransitionError(
+                f"Cannot change order {order_id} "
+                f"from {order.status.value} "
+                f"to {next_status.value}"
+            )
 
-        raise InvalidOrderStatusTransitionError(
-            f"Cannot change order {order_id} "
-            f"from {order.status.value} "
-            f"to {status_data.status.value}"
-        )
+        if next_status in {
+            OrderStatus.CANCELLED,
+            OrderStatus.SHIPPED,
+        }:
+            quantities_by_product: dict[int, int] = {}
 
-    if (
-        status_data.status
-        == OrderStatus.CANCELLED
-    ):
-        product_ids = sorted(
-            {
-                item.product_id
-                for item in order.items
-            }
-        )
-
-        if product_ids:
-            product_result = db.execute(
-                select(Product)
-                .where(
-                    Product.id.in_(
-                        product_ids
-                    )
+            for item in order.items:
+                quantities_by_product[item.product_id] = (
+                    quantities_by_product.get(item.product_id, 0)
+                    + item.quantity
                 )
+
+            changed_product_ids = sorted(quantities_by_product)
+
+            products = db.execute(
+                select(Product)
+                .where(Product.id.in_(changed_product_ids))
                 .order_by(Product.id)
                 .with_for_update()
-            )
-
-            products = list(
-                product_result.scalars().all()
-            )
+                .execution_options(populate_existing=True)
+            ).scalars().all()
 
             products_by_id = {
                 product.id: product
                 for product in products
             }
 
-            for item in order.items:
-                product = products_by_id[
-                    item.product_id
-                ]
+            # Validate every reservation before changing any counter.
+            for product_id in changed_product_ids:
+                product = products_by_id.get(product_id)
+                quantity = quantities_by_product[product_id]
 
-                product.stock_quantity += (
-                    item.quantity
-                )
+                if (
+                    product is None
+                    or product.reserved_quantity < quantity
+                ):
+                    raise RuntimeError(
+                        "Inventory reservation inconsistency "
+                        f"for order {order_id}, product {product_id}"
+                    )
 
-    order.status = status_data.status
+            for product_id in changed_product_ids:
+                product = products_by_id[product_id]
+                quantity = quantities_by_product[product_id]
 
-    try:
+                product.reserved_quantity -= quantity
+
+                if next_status == OrderStatus.CANCELLED:
+                    product.stock_quantity += quantity
+
+        order.status = next_status
         db.commit()
 
     except Exception:
         db.rollback()
         raise
 
-    updated_order = get_order(
-        db,
-        order_id,
-    )
+    for product_id in changed_product_ids:
+        invalidate_product_cache(product_id)
+
+    updated_order = get_order(db, order_id)
 
     if updated_order is None:
         raise OrderNotFoundError(

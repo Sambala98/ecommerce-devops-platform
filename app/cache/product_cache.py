@@ -26,8 +26,21 @@ def get_cached_product(product_id: int) -> dict[str, Any] | None:
         if cached_value is None:
             return None
 
-        return json.loads(cached_value)
+        product_data = json.loads(cached_value)
 
+        # Old cache entries do not contain reservation fields.
+        if not isinstance(product_data, dict):
+            return None
+
+        required_fields = {
+            "reserved_quantity",
+            "on_hand_quantity",
+        }
+
+        if not required_fields.issubset(product_data):
+            return None
+
+        return product_data
     except (RedisError, json.JSONDecodeError) as error:
       logger.warning(
         "Failed to read product %s from Redis cache: %s",
@@ -44,6 +57,8 @@ def set_cached_product(product: Product) -> None:
         "sku": product.sku,
         "price": str(product.price),
         "stock_quantity": product.stock_quantity,
+        "reserved_quantity": product.reserved_quantity,
+        "on_hand_quantity": product.on_hand_quantity,
         "is_active": product.is_active,
         "created_at": (
             product.created_at.isoformat()

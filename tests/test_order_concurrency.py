@@ -187,6 +187,8 @@ def test_concurrent_orders_preserve_inventory(
         saved_product = verify.get(Product, product_id)
         assert saved_product is not None
         assert saved_product.stock_quantity == 0
+        assert saved_product.reserved_quantity == expected_created
+        assert saved_product.on_hand_quantity == starting_stock
 
         orders = list(
             verify.scalars(
@@ -315,10 +317,16 @@ def test_concurrent_idempotency(
         assert order.id == successful_ids[0]
         assert item.order_id == order.id
         assert order.idempotency_key == "simultaneous-checkout"
-        assert order.total_amount == Decimal("25.00") * item.quantity
-        assert verify.get(
-            Product, product_id
-        ).stock_quantity == 2 - item.quantity
+        assert order.total_amount == (
+            Decimal("25.00") * item.quantity
+        )
+
+        saved_product = verify.get(Product, product_id)
+
+        assert saved_product is not None
+        assert saved_product.stock_quantity == 2 - item.quantity
+        assert saved_product.reserved_quantity == item.quantity
+        assert saved_product.on_hand_quantity == 2
 
         assert verify.scalar(
             select(func.count()).select_from(ProductInteraction)

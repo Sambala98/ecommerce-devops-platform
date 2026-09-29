@@ -1,7 +1,16 @@
 from datetime import datetime
 from decimal import Decimal
 
-from sqlalchemy import Boolean, DateTime, Integer, Numeric, String, Text, func
+from sqlalchemy import (
+    Boolean,
+    CheckConstraint,
+    DateTime,
+    Integer,
+    Numeric,
+    String,
+    Text,
+    func,
+)
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.database import Base
@@ -9,6 +18,16 @@ from app.db.database import Base
 
 class Product(Base):
     __tablename__ = "products"
+    __table_args__ = (
+        CheckConstraint(
+            "stock_quantity >= 0",
+            name="ck_products_stock_nonnegative",
+        ),
+        CheckConstraint(
+            "reserved_quantity >= 0",
+            name="ck_products_reserved_nonnegative",
+        ),
+    )
 
     id: Mapped[int] = mapped_column(
         Integer,
@@ -45,6 +64,17 @@ class Product(Base):
         default=0,
         server_default="0",
     )
+
+    reserved_quantity: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        default=0,
+        server_default="0",
+    )
+
+    @property
+    def on_hand_quantity(self) -> int:
+        return self.stock_quantity + self.reserved_quantity
 
     is_active: Mapped[bool] = mapped_column(
         Boolean,

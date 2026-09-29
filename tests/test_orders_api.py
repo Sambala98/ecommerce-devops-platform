@@ -1088,6 +1088,59 @@ def test_failed_order_does_not_consume_idempotency_key(
         Product, product_id
     ).stock_quantity == 0
     assert len(database_session.scalars(select(Order)).all()) == 1
+def test_order_inventory_invalidates_product_cache(
+    client,
+    database_session,
+    user_headers,
+    admin_headers,
+    redis_test_client,
+):
+    from app.cache.product_cache import product_cache_key
+
+    product = create_test_product(
+        database_session,
+        stock_quantity=10,
+    )
+    product_id = product.id
+    cache_key = product_cache_key(product_id)
+
+    # Populate the cache before placing the order.
+    initial = client.get(f"/products/{product_id}")
+    assert initial.status_code == 200
+    assert redis_test_client.exists(cache_key) == 1
+
+    created = client.post(
+        "/orders",
+        headers=user_headers,
+        json={
+            "items": [
+                {"product_id": product_id, "quantity": 2}
+            ]
+        },
+    )
+    assert created.status_code == 201, created.text
+    assert redis_test_client.exists(cache_key) == 0
+
+    # Reload and then exercise a cache hit.
+    for _ in range(2):
+        response = client.get(f"/products/{product_id}")
+        assert response.status_code == 200, response.text
+        assert response.json()["stock_quantity"] == 8
+        assert response.json()["reserved_quantity"] == 2
+        assert response.json()["on_hand_quantity"] == 10
+
+    cancelled = client.patch(
+        f"/orders/{created.json()['id']}/status",
+        headers=admin_headers,
+        json={"status": "CANCELLED"},
+    )
+    assert cancelled.status_code == 200, cancelled.text
+    assert redis_test_client.exists(cache_key) == 0
+
+    restored = client.get(f"/products/{product_id}")
+    assert restored.status_code == 200, restored.text
+    assert restored.json()["stock_quantity"] == 10
+    assert restored.json()["reserved_quantity"] == 0
 
 
 @pytest.mark.parametrize("key", ["contains spaces", "x" * 129])
@@ -1111,3 +1164,90 @@ def test_invalid_idempotency_key_returns_422(
 
     assert response.status_code == 422
     assert database_session.scalars(select(Order)).all() == []
+@pytest.mark.parametrize("finish", ["CANCELLED", "SHIPPED"])
+def test_inventory_reservation_lifecycle(
+    client,
+    database_session,
+    user_headers,
+    admin_headers,
+    finish,
+):
+    product = create_test_product(
+        database_session,
+        stock_quantity=10,
+    )
+    product_id = product.id
+
+    def assert_inventory(available, reserved, on_hand):
+        database_session.expire_all()
+        saved = database_session.get(Product, product_id)
+
+        assert saved.stock_quantity == available
+        assert saved.reserved_quantity == reserved
+        assert saved.on_hand_quantity == on_hand
+
+        response = client.get(f"/products/{product_id}")
+        assert response.status_code == 200, response.text
+        data = response.json()
+
+        assert data["stock_quantity"] == available
+        assert data["reserved_quantity"] == reserved
+        assert data["on_hand_quantity"] == on_hand
+
+    assert_inventory(10, 0, 10)
+
+    headers = {
+        **user_headers,
+        "Idempotency-Key": "reservation-lifecycle",
+    }
+    payload = {
+        "items": [
+            {"product_id": product_id, "quantity": 2}
+        ]
+    }
+
+    created = client.post("/orders", headers=headers, json=payload)
+    assert created.status_code == 201, created.text
+    order_id = created.json()["id"]
+    assert_inventory(8, 2, 10)
+
+    retry = client.post("/orders", headers=headers, json=payload)
+    assert retry.status_code == 201, retry.text
+    assert retry.json()["id"] == order_id
+    assert_inventory(8, 2, 10)
+
+    if finish == "SHIPPED":
+        confirmed = client.patch(
+            f"/orders/{order_id}/status",
+            headers=admin_headers,
+            json={"status": "CONFIRMED"},
+        )
+        assert confirmed.status_code == 200, confirmed.text
+        assert_inventory(8, 2, 10)
+
+    finished = client.patch(
+        f"/orders/{order_id}/status",
+        headers=admin_headers,
+        json={"status": finish},
+    )
+    assert finished.status_code == 200, finished.text
+
+    expected_available = 10 if finish == "CANCELLED" else 8
+    assert_inventory(expected_available, 0, expected_available)
+
+    repeated = client.patch(
+        f"/orders/{order_id}/status",
+        headers=admin_headers,
+        json={"status": finish},
+    )
+    assert repeated.status_code == 409
+    assert_inventory(expected_available, 0, expected_available)
+
+    if finish == "SHIPPED":
+        delivered = client.patch(
+            f"/orders/{order_id}/status",
+            headers=admin_headers,
+            json={"status": "DELIVERED"},
+        )
+        assert delivered.status_code == 200, delivered.text
+        assert_inventory(8, 0, 8)

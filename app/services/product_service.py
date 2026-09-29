@@ -95,31 +95,41 @@ def get_product_for_read(
     set_cached_product(product)
 
     return product
-
-
 def update_product(
     database_session: Session,
     product_id: int,
     product_data: ProductUpdate,
 ) -> Product:
-    product = get_product(
-        database_session=database_session,
-        product_id=product_id,
-    )
+    try:
+        product = database_session.execute(
+            select(Product)
+            .where(Product.id == product_id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        ).scalar_one_or_none()
 
-    update_values = product_data.model_dump(
-        exclude_unset=True
-    )
+        if product is None:
+            raise ProductNotFoundError(
+                f"Product with ID {product_id} was not found"
+            )
 
-    for field_name, field_value in update_values.items():
-        setattr(product, field_name, field_value)
+        update_values = product_data.model_dump(
+            exclude_unset=True
+        )
 
-    database_session.commit()
-    database_session.refresh(product)
+        for field_name, field_value in update_values.items():
+            setattr(product, field_name, field_value)
+
+        database_session.commit()
+
+    except Exception:
+        database_session.rollback()
+        raise
+
     invalidate_product_cache(product_id)
+    database_session.refresh(product)
 
     return product
-
 
 def delete_product(
     database_session: Session,

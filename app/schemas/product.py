@@ -59,6 +59,8 @@ class ProductUpdate(BaseModel):
 
 class ProductResponse(ProductBase):
     id: int
+    reserved_quantity: int = Field(ge=0)
+    on_hand_quantity: int = Field(ge=0)
     created_at: datetime
     updated_at: datetime
 
