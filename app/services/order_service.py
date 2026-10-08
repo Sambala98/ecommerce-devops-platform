@@ -286,7 +286,7 @@ def create_order(
                 ProductInteraction(
                     user_id=user_id,
                     product_id=product.id,
-                    interaction_type=InteractionType.PURCHASE,
+                    interaction_type=InteractionType.ORDER_PLACED,
                 )
             )
 

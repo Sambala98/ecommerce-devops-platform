@@ -219,7 +219,7 @@ def test_order_creates_order_item(
     )
 
 
-def test_order_creates_purchase_interaction(
+def test_order_creates_order_placed_interaction(
     client,
     database_session,
     test_user,
@@ -255,7 +255,7 @@ def test_order_creates_purchase_interaction(
 
     assert (
         interaction.interaction_type
-        == InteractionType.PURCHASE
+        == InteractionType.ORDER_PLACED
     )
 
 
@@ -1251,3 +1251,33 @@ def test_inventory_reservation_lifecycle(
         )
         assert delivered.status_code == 200, delivered.text
         assert_inventory(8, 0, 8)
+@pytest.mark.parametrize(
+    "interaction_type",
+    ["ORDER_PLACED", "PURCHASE"],
+)
+def test_client_cannot_create_server_interactions(
+    client,
+    database_session,
+    user_headers,
+    interaction_type,
+):
+    product = create_test_product(database_session)
+
+    response = client.post(
+        "/interactions",
+        headers=user_headers,
+        json={
+            "product_id": product.id,
+            "interaction_type": interaction_type,
+        },
+    )
+
+    assert response.status_code == 422, response.text
+
+    interactions = database_session.execute(
+        select(ProductInteraction).where(
+            ProductInteraction.product_id == product.id
+        )
+    ).scalars().all()
+
+    assert interactions == []

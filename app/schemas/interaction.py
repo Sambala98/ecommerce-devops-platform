@@ -15,13 +15,19 @@ class InteractionCreateRequest(BaseModel):
 
     @field_validator("interaction_type")
     @classmethod
-    def reject_manual_purchase(
+    def allow_client_interactions_only(
         cls,
         value: InteractionType,
     ) -> InteractionType:
-        if value == InteractionType.PURCHASE:
+        allowed_types = {
+            InteractionType.VIEW,
+            InteractionType.ADD_TO_CART,
+        }
+
+        if value not in allowed_types:
             raise ValueError(
-                "PURCHASE interactions are created automatically through orders"
+                "Only VIEW and ADD_TO_CART interactions "
+                "can be submitted manually"
             )
 
         return value

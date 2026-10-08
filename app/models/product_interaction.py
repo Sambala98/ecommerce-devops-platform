@@ -10,6 +10,7 @@ from app.db.database import Base
 class InteractionType(str, Enum):
     VIEW = "VIEW"
     ADD_TO_CART = "ADD_TO_CART"
+    ORDER_PLACED = "ORDER_PLACED"
     PURCHASE = "PURCHASE"
 
 
