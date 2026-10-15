@@ -33,6 +33,11 @@ class Order(Base):
             "idempotency_key",
             name="uq_orders_user_id_idempotency_key",
         ),
+                UniqueConstraint(
+            "user_id",
+            "checkout_idempotency_key",
+            name="uq_orders_user_checkout_key",
+        ),
         CheckConstraint(
             """
             (
@@ -63,6 +68,10 @@ class Order(Base):
 
     idempotency_request_hash: Mapped[str | None] = mapped_column(
         String(64),
+        nullable=True,
+    )
+    checkout_idempotency_key: Mapped[str | None] = mapped_column(
+        String(128),
         nullable=True,
     )
     status: Mapped[OrderStatus] = mapped_column(

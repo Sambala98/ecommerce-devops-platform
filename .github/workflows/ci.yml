@@ -1,9 +1,8 @@
-name: CI
-
 on:
   push:
     branches:
       - main
+      - feature/shopping-cart
 
   pull_request:
     branches:
@@ -49,7 +48,8 @@ jobs:
       DATABASE_URL: postgresql+psycopg://postgres:postgres@localhost:5432/ecommerce_db
       TEST_DATABASE_URL: postgresql+psycopg://postgres:postgres@localhost:5432/ecommerce_test_db
       REDIS_URL: redis://localhost:6379/0
-      REDIS_CACHE_TTL: 300
+      REDIS_CACHE_TTL: "300"
+      JWT_SECRET_KEY: "ci-only-jwt-signing-key-never-use-in-production-1234567890"
 
     steps:
       - name: Checkout repository

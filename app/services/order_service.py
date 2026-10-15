@@ -1,7 +1,6 @@
 import hashlib
 import json
-
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.dialects.postgresql import insert
 
 from decimal import Decimal
 
@@ -110,6 +109,160 @@ def find_idempotent_order(
         )
 
     return order
+def create_order_in_transaction(
+    db: Session,
+    order_data: OrderCreate,
+    *,
+    idempotency_key: str | None = None,
+) -> tuple[Order, list[int]]:
+    """
+    Create an order inside the caller's transaction.
+
+    Does not commit, roll back, or invalidate caches.
+    Returns the order and product IDs whose inventory changed.
+    The caller must roll back if this function raises.
+    """
+    user_id = order_data.user_id
+
+    request_hash = (
+        build_order_request_hash(order_data)
+        if idempotency_key is not None
+        else None
+    )
+
+    # Return successful retries before checking current stock.
+    if idempotency_key is not None:
+        existing = find_idempotent_order(
+            db,
+            user_id,
+            idempotency_key,
+            request_hash,
+        )
+
+        if existing is not None:
+            return existing, []
+
+    if not order_data.items:
+        raise EmptyOrderError(
+            "Order must contain at least one item"
+        )
+
+    user = db.get(User, user_id)
+
+    if user is None:
+        raise UserNotFoundError(
+            f"User {user_id} not found"
+        )
+
+    statement = insert(Order).values(
+        user_id=user_id,
+        status=OrderStatus.PENDING,
+        total_amount=Decimal("0.00"),
+        idempotency_key=idempotency_key,
+        idempotency_request_hash=request_hash,
+    )
+
+    if idempotency_key is not None:
+        statement = statement.on_conflict_do_nothing(
+            constraint="uq_orders_user_id_idempotency_key",
+        )
+
+    order = db.scalars(
+        statement.returning(Order)
+    ).one_or_none()
+
+    if order is None:
+        # Another request committed this key while we waited.
+        existing = find_idempotent_order(
+            db,
+            user_id,
+            idempotency_key,
+            request_hash,
+        )
+
+        if existing is None:
+            raise RuntimeError(
+                "Idempotent order could not be loaded "
+                "after an insert conflict"
+            )
+
+        return existing, []
+
+    quantities_by_product: dict[int, int] = {}
+
+    for item_data in order_data.items:
+        product_id = item_data.product_id
+
+        quantities_by_product[product_id] = (
+            quantities_by_product.get(product_id, 0)
+            + item_data.quantity
+        )
+
+    product_ids = sorted(quantities_by_product)
+
+    products = db.execute(
+        select(Product)
+        .where(Product.id.in_(product_ids))
+        .order_by(Product.id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    ).scalars().all()
+
+    products_by_id = {
+        product.id: product
+        for product in products
+    }
+
+    for product_id in product_ids:
+        product = products_by_id.get(product_id)
+
+        if product is None:
+            raise ProductNotFoundError(
+                f"Product {product_id} not found"
+            )
+
+        if (
+            product.stock_quantity
+            < quantities_by_product[product_id]
+        ):
+            raise InsufficientStockError(
+                f"Insufficient stock for product {product.id}"
+            )
+
+    total_amount = Decimal("0.00")
+
+    for item_data in order_data.items:
+        product = products_by_id[item_data.product_id]
+        unit_price = product.price
+
+        total_amount += unit_price * item_data.quantity
+
+        db.add(
+            OrderItem(
+                order_id=order.id,
+                product_id=product.id,
+                quantity=item_data.quantity,
+                unit_price=unit_price,
+            )
+        )
+
+        product.stock_quantity -= item_data.quantity
+        product.reserved_quantity += item_data.quantity
+
+        db.add(
+            ProductInteraction(
+                user_id=user_id,
+                product_id=product.id,
+                interaction_type=InteractionType.ORDER_PLACED,
+            )
+        )
+
+    order.total_amount = total_amount
+
+    # Send pending writes to PostgreSQL without committing.
+    db.flush()
+
+    return order, product_ids
 
 
 def create_order(
@@ -118,193 +271,34 @@ def create_order(
     *,
     idempotency_key: str | None = None,
 ) -> Order:
-    user_id = order_data.user_id
-    request_hash = None
-
-    if idempotency_key is not None:
-        normalized_items = sorted(
-            (item.product_id, item.quantity)
-            for item in order_data.items
-        )
-
-        canonical_json = json.dumps(
-            {
-                "version": 1,
-                "items": normalized_items,
-            },
-            sort_keys=True,
-            separators=(",", ":"),
-        )
-
-        request_hash = hashlib.sha256(
-            canonical_json.encode("utf-8")
-        ).hexdigest()
-
-    def find_existing_order() -> Order | None:
-        existing = db.execute(
-            select(Order)
-            .options(selectinload(Order.items))
-            .where(
-                Order.user_id == user_id,
-                Order.idempotency_key == idempotency_key,
-            )
-            .execution_options(populate_existing=True)
-        ).scalar_one_or_none()
-
-        if (
-            existing is not None
-            and existing.idempotency_request_hash != request_hash
-        ):
-            raise IdempotencyConflictError(
-                "Idempotency-Key was already used "
-                "with different order contents"
-            )
-
-        return existing
-
     try:
-        # A retry must return before checking current stock.
-        if idempotency_key is not None:
-            existing = find_existing_order()
-
-            if existing is not None:
-                return existing
-
-        if not order_data.items:
-            raise EmptyOrderError(
-                "Order must contain at least one item"
+        order, changed_product_ids = (
+            create_order_in_transaction(
+                db,
+                order_data,
+                idempotency_key=idempotency_key,
             )
-
-        user = db.get(User, user_id)
-
-        if user is None:
-            raise UserNotFoundError(
-                f"User {user_id} not found"
-            )
-
-        # Store the key and hash on the FIRST order.
-        # Flush reserves the unique key without committing.
-        order = Order(
-            user_id=user_id,
-            total_amount=Decimal("0.00"),
-            idempotency_key=idempotency_key,
-            idempotency_request_hash=request_hash,
         )
 
-        db.add(order)
-
-        try:
-            db.flush()
-
-        except IntegrityError as exc:
-            diagnostic = getattr(exc.orig, "diag", None)
-            constraint_name = getattr(
-                diagnostic,
-                "constraint_name",
-                None,
-            )
-
-            db.rollback()
-
-            if (
-                idempotency_key is None
-                or constraint_name
-                != "uq_orders_user_id_idempotency_key"
-            ):
-                raise
-
-            # Another request committed this key while we waited.
-            existing = find_existing_order()
-
-            if existing is None:
-                raise
-
-            return existing
-
-        quantities_by_product: dict[int, int] = {}
-
-        for item_data in order_data.items:
-            product_id = item_data.product_id
-
-            quantities_by_product[product_id] = (
-                quantities_by_product.get(product_id, 0)
-                + item_data.quantity
-            )
-
-        product_ids = sorted(quantities_by_product)
-
-        products = db.execute(
-            select(Product)
-            .where(Product.id.in_(product_ids))
-            .order_by(Product.id)
-            .with_for_update()
-            .execution_options(populate_existing=True)
-        ).scalars().all()
-
-        products_by_id = {
-            product.id: product
-            for product in products
-        }
-
-        for product_id in product_ids:
-            product = products_by_id.get(product_id)
-
-            if product is None:
-                raise ProductNotFoundError(
-                    f"Product {product_id} not found"
-                )
-
-            if (
-                product.stock_quantity
-                < quantities_by_product[product_id]
-            ):
-                raise InsufficientStockError(
-                    f"Insufficient stock for product {product.id}"
-                )
-
-        total_amount = Decimal("0.00")
-
-        for item_data in order_data.items:
-            product = products_by_id[item_data.product_id]
-            unit_price = product.price
-
-            total_amount += unit_price * item_data.quantity
-
-            db.add(
-                OrderItem(
-                    order_id=order.id,
-                    product_id=product.id,
-                    quantity=item_data.quantity,
-                    unit_price=unit_price,
-                )
-            )
-
-            product.stock_quantity -= item_data.quantity
-            product.reserved_quantity += item_data.quantity
-
-            db.add(
-                ProductInteraction(
-                    user_id=user_id,
-                    product_id=product.id,
-                    interaction_type=InteractionType.ORDER_PLACED,
-                )
-            )
-
-        order.total_amount = total_amount
         order_id = order.id
-
         db.commit()
 
     except Exception:
         db.rollback()
         raise
-    for product_id in product_ids:
+
+    # Invalidate only after the database commit succeeds.
+    for product_id in changed_product_ids:
         invalidate_product_cache(product_id)
+
     return db.execute(
         select(Order)
         .options(selectinload(Order.items))
         .where(Order.id == order_id)
+        .execution_options(populate_existing=True)
     ).scalar_one()
+
+
 
 def get_order(
     db: Session,
