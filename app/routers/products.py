@@ -4,6 +4,7 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from sqlalchemy.orm import Session
+from decimal import Decimal
 
 from app.db.database import get_db
 from app.schemas.product import (
@@ -58,6 +59,7 @@ def create_product_endpoint(
         ) from error
 
 
+
 @router.get(
     "",
     response_model=list[ProductResponse],
@@ -73,11 +75,53 @@ def list_products_endpoint(
         ge=1,
         le=100,
     ),
+    min_price: Decimal | None = Query(
+        default=None,
+        ge=0,
+        max_digits=10,
+        decimal_places=2,
+        allow_inf_nan=False,
+    ),
+    max_price: Decimal | None = Query(
+        default=None,
+        ge=0,
+        max_digits=10,
+        decimal_places=2,
+        allow_inf_nan=False,
+    ),
+    q: str | None = Query(
+        default=None,
+        min_length=1,
+        max_length=100,
+        description="Search product name, description, or SKU",
+    ),
 ) -> list[ProductResponse]:
+    if q is not None:
+        q = q.strip()
+
+        if not q:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail="q must contain at least one non-whitespace character",
+            )
+
+    if (
+        min_price is not None
+        and max_price is not None
+        and min_price > max_price
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="min_price must be less than or equal to max_price",
+        )
+
     return list_products(
         database_session=database_session,
         skip=skip,
         limit=limit,
+        min_price=min_price,
+        max_price=max_price,
+        q=q,
     )
 
 
