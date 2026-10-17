@@ -1,5 +1,5 @@
 from typing import Any
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -11,6 +11,7 @@ from app.cache.product_cache import (
 
 from app.models.product import Product
 from app.schemas.product import ProductCreate, ProductUpdate
+from decimal import Decimal
 
 
 class ProductAlreadyExistsError(Exception):
@@ -53,9 +54,34 @@ def list_products(
     database_session: Session,
     skip: int = 0,
     limit: int = 20,
+    *,
+    min_price: Decimal | None = None,
+    max_price: Decimal | None = None,
+    q: str | None = None,
 ) -> list[Product]:
+    statement = select(Product)
+
+    if q is not None:
+        statement = statement.where(
+            or_(
+                Product.name.icontains(q, autoescape=True),
+                Product.description.icontains(q, autoescape=True),
+                Product.sku.icontains(q, autoescape=True),
+            )
+        )
+
+    if min_price is not None:
+        statement = statement.where(
+            Product.price >= min_price
+        )
+
+    if max_price is not None:
+        statement = statement.where(
+            Product.price <= max_price
+        )
+
     statement = (
-        select(Product)
+        statement
         .order_by(Product.id)
         .offset(skip)
         .limit(limit)
