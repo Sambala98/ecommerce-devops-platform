@@ -1,9 +1,12 @@
 venv/
+Venv/
+.venv/
 __pycache__/
 *.pyc
 .pytest_cache/
 .git/
 .gitignore
 .env
-.env.docker
-.env.compose
+.env.*
+!.env.example
+!.env.compose.example
