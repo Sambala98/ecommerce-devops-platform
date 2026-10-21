@@ -88,3 +88,103 @@ jobs:
       - name: Build Docker image
         run: |
           docker build -t ecommerce-api .
+
+
+
+  compose-smoke-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    permissions:
+      contents: read
+
+    env:
+      COMPOSE_PROJECT_NAME: smoke-${{ github.run_id }}-${{ github.run_attempt }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Create CI-only Compose configuration
+        shell: bash
+        run: |
+          cat > .env.compose <<'EOF'
+          POSTGRES_PASSWORD=ci_smoke_password
+          DATABASE_URL=postgresql+psycopg://postgres:ci_smoke_password@postgres:5432/ecommerce_db
+          TEST_DATABASE_URL=postgresql+psycopg://postgres:ci_smoke_password@postgres:5432/ecommerce_test_db
+          REDIS_URL=redis://redis:6379/0
+          REDIS_CACHE_TTL=300
+          JWT_SECRET_KEY=ci-only-smoke-test-signing-key-never-use-in-production-1234567890
+          JWT_ALGORITHM=HS256
+          ACCESS_TOKEN_EXPIRE_MINUTES=30
+          EOF
+
+      - name: Validate Compose configuration
+        run: docker compose --env-file .env.compose config --quiet
+
+      - name: Build and wait for healthy services
+        run: |
+          docker compose --env-file .env.compose up \
+            --build --wait --wait-timeout 180
+
+      - name: Check HTTP health endpoints
+        run: |
+          curl --fail --show-error --silent --max-time 10 \
+            http://127.0.0.1:8000/health
+          curl --fail --show-error --silent --max-time 10 \
+            http://127.0.0.1:8000/health/database
+
+      - name: Verify migrations, test database, and Redis
+        shell: bash
+        run: |
+          docker compose --env-file .env.compose exec -T api python - <<'PY'
+          import os
+
+          from alembic.config import Config
+          from alembic.runtime.migration import MigrationContext
+          from alembic.script import ScriptDirectory
+          from redis import Redis
+          from sqlalchemy import create_engine, text
+
+          scripts = ScriptDirectory.from_config(Config("alembic.ini"))
+          expected_heads = set(scripts.get_heads())
+
+          engine = create_engine(os.environ["DATABASE_URL"])
+          with engine.connect() as connection:
+              actual_heads = set(
+                  MigrationContext.configure(connection).get_current_heads()
+              )
+
+          assert actual_heads == expected_heads, (
+              f"Migration mismatch: actual={actual_heads}, "
+              f"expected={expected_heads}"
+          )
+          engine.dispose()
+          print("Application database is at migration head.")
+
+          test_engine = create_engine(os.environ["TEST_DATABASE_URL"])
+          with test_engine.connect() as connection:
+              assert connection.execute(text("SELECT 1")).scalar_one() == 1
+          test_engine.dispose()
+          print("Initialization script created a reachable test database.")
+
+          redis_client = Redis.from_url(
+              os.environ["REDIS_URL"],
+              socket_connect_timeout=5,
+              socket_timeout=5,
+          )
+          assert redis_client.ping() is True
+          redis_client.close()
+          print("Redis is reachable from the API container.")
+          PY
+
+      - name: Show service status and logs
+        if: always()
+        run: |
+          docker compose --env-file .env.compose ps -a
+          docker compose --env-file .env.compose logs --no-color --tail=100
+
+      - name: Remove CI containers and volumes
+        if: always()
+        run: |
+          docker compose --env-file .env.compose down --volumes --remove-orphans
