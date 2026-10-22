@@ -178,7 +178,6 @@ def test_checkout_failure_preserves_cart_and_inventory(
         assert product.stock_quantity == expected_stock
         assert product.reserved_quantity == 0
 
-
 def test_failure_after_cart_delete_rolls_back_everything(
     client,
     user_headers,
@@ -196,9 +195,10 @@ def test_failure_after_cart_delete_rolls_back_everything(
         invalidations.append,
     )
 
+    failure_reached = []
+
     def fail_before_commit(db, order_id):
-        # This point is reached after order creation,
-        # inventory changes, cart deletion, and flush.
+        # Verify the writes happened inside the transaction.
         assert db.get(Order, order_id) is not None
         assert db.scalar(select(CartItem.id)) is None
 
@@ -206,6 +206,7 @@ def test_failure_after_cart_delete_rolls_back_everything(
         assert product.stock_quantity == 3
         assert product.reserved_quantity == 2
 
+        failure_reached.append(True)
         raise RuntimeError("Injected checkout failure")
 
     monkeypatch.setattr(
@@ -214,10 +215,14 @@ def test_failure_after_cart_delete_rolls_back_everything(
         fail_before_commit,
     )
 
-    # TestClient propagates unhandled server exceptions.
-    with pytest.raises(RuntimeError, match="Injected checkout failure"):
-        checkout(client, user_headers)
+    response = checkout(client, user_headers)
 
+    assert failure_reached == [True]
+    assert response.status_code == 500
+    assert response.json() == {"detail": "Internal server error"}
+    assert response.headers.get("X-Request-ID")
+
+    # A fresh session verifies that all writes were rolled back.
     with session_factory() as db:
         assert_no_order_writes(db)
 
@@ -231,6 +236,7 @@ def test_failure_after_cart_delete_rolls_back_everything(
 
     # A rolled-back checkout must not invalidate caches.
     assert invalidations == []
+
 
 
 def test_empty_cart_returns_400(
