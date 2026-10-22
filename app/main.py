@@ -11,6 +11,10 @@ from app.routers.orders import router as orders_router
 from app.routers.interactions import router as interactions_router
 from app.routers.auth import router as auth_router
 from app.routers.cart import router as cart_router
+from app.request_logging import (
+    configure_request_logging,
+    log_request,
+)
 
 settings = get_settings()
 
@@ -19,6 +23,8 @@ app = FastAPI(
     version=settings.app_version,
     debug=settings.debug,
 )
+configure_request_logging()
+app.middleware("http")(log_request)
 
 app.include_router(products_router)
 app.include_router(users_router)
