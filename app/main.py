@@ -15,6 +15,7 @@ from app.request_logging import (
     configure_request_logging,
     log_request,
 )
+from app.metrics import setup_metrics
 
 settings = get_settings()
 
@@ -25,6 +26,7 @@ app = FastAPI(
 )
 configure_request_logging()
 app.middleware("http")(log_request)
+setup_metrics(app)
 
 app.include_router(products_router)
 app.include_router(users_router)
