@@ -41,10 +41,24 @@ async def log_request(
             content={"detail": "Internal server error"},
         )
 
+    duration_seconds = perf_counter() - started
     response.headers["X-Request-ID"] = request_id
 
     route = request.scope.get("route")
     route_path = getattr(route, "path", "<unmatched>")
+
+    metrics = getattr(
+        request.app.state,
+        "request_metrics",
+        None,
+    )
+    if metrics is not None:
+        metrics.record(
+            method=request.method,
+            route=route_path,
+            status_code=response.status_code,
+            duration_seconds=duration_seconds,
+        )
 
     entry = {
         "timestamp": datetime.now(timezone.utc).isoformat(),
@@ -53,10 +67,7 @@ async def log_request(
         "method": request.method,
         "path": route_path,
         "status_code": response.status_code,
-        "duration_ms": round(
-            (perf_counter() - started) * 1000,
-            3,
-        ),
+        "duration_ms": round(duration_seconds * 1000, 3),
     }
 
     if error_type is not None:
