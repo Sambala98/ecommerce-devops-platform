@@ -15,6 +15,9 @@ SQLAlchemy, Alembic, Docker Compose, and GitHub Actions.
 - Atomic cart checkout with user-scoped idempotency
 - Concurrency tests for orders, carts, and checkout
 - Database migrations with Alembic
+- Structured request logging with generated request IDs
+- Prometheus request counters and response-ready duration histograms
+- Optional Prometheus collection and provisioned Grafana dashboard
 
 Checkout creates a pending order. Payment processing is not implemented.
 
@@ -104,6 +107,87 @@ the PostgreSQL data directory is first initialized.
 
 These scripts do not run again for an existing database volume.
 
+
+## Optional monitoring
+
+Monitoring requires available host ports 9090 and 3000.
+
+Generate a Grafana password:
+
+```bat
+python -c "import secrets; print(secrets.token_hex(24))"
+```
+
+Set GRAFANA_ADMIN_PASSWORD in your private .env.compose file
+to the generated value. Do not commit this password.
+
+Start the application with monitoring. Run each command separately:
+
+```bat
+docker compose --env-file .env.compose -f compose.yaml -f compose.monitoring.yaml config --quiet
+docker compose --env-file .env.compose -f compose.yaml -f compose.monitoring.yaml up -d --build --wait --wait-timeout 180
+docker compose --env-file .env.compose -f compose.yaml -f compose.monitoring.yaml ps -a
+```
+
+Open:
+
+- Prometheus: http://127.0.0.1:9090
+- Grafana dashboard: http://127.0.0.1:3000/d/ecommerce-api
+
+Log into Grafana as admin using GRAFANA_ADMIN_PASSWORD.
+
+The Grafana data source and dashboard load automatically from
+the version-controlled monitoring directory.
+
+Prometheus scrapes api:8000/metrics every 15 seconds.
+Prometheus and Grafana host ports bind only to 127.0.0.1.
+
+### Dashboard examples
+
+- Compare HTTP 200 product requests with HTTP 404 missing-route requests.
+- Inspect estimated p95 response-ready duration by method and route.
+
+Health checks are included in the status panel but excluded from
+the application-route and latency panels.
+
+The UP indicator confirms that Prometheus can scrape the API.
+It does not verify PostgreSQL or Redis connectivity.
+
+Rate calculations need multiple samples. Allow at least a minute
+after startup and generate application traffic. Idle routes can
+show zero rates or gaps in latency graphs.
+
+Duration measurements exclude streaming and background-task completion.
+Histogram percentiles are estimates, not exact request timings.
+
+### Monitoring storage and credentials
+
+API counters are process-local and reset when the API restarts.
+Prometheus stores collected history in its named volume.
+Retention is configured for 7 days with a 1 GB size limit;
+whichever limit is reached first governs retention.
+Actual disk use can exceed the configured retention size.
+
+Grafana stores its state in a separate named volume.
+
+GRAFANA_ADMIN_PASSWORD initializes the administrator password.
+Changing this variable does not update an existing Grafana account.
+Change an existing password through Grafana, and keep the local
+configuration consistent.
+
+### Stop the stack with monitoring
+
+```bat
+docker compose --env-file .env.compose -f compose.yaml -f compose.monitoring.yaml down
+```
+
+This retains PostgreSQL, Prometheus, and Grafana named volumes.
+Do not add --volumes or -v unless you intend to delete their data.
+
+This monitoring configuration targets a single API process.
+Public deployment requires access controls for /metrics and a review
+of exposed ports, credentials, and network configuration.
+
 ## Stop the application
 
 ```bat
@@ -115,11 +199,14 @@ Adding `-v` deletes the volume and its database data.
 
 ## Validation status
 
-- Most recent local application suite: 176 passed, no skips
+- Most recent local application suite: 195 passed, no skips
 - Docker image build and existing-volume startup verified
 - Existing database upgraded to checkout_key_v1
 - API and database health endpoints returned HTTP 200
 - Redis connectivity verified from the API container
+- Fresh-volume initialization verified by the existing CI smoke test
+- Prometheus collection and Grafana dashboard verified locally
+- Monitoring CI verification added; its first CI run is pending
 
-Fresh-volume initialization and production deployment have not
-yet been verified. This Compose setup is intended for local development.
+Production deployment has not been verified.
+This Compose setup is intended for local development.
