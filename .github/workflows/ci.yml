@@ -100,6 +100,8 @@ jobs:
 
     env:
       COMPOSE_PROJECT_NAME: smoke-${{ github.run_id }}-${{ github.run_attempt }}
+      COMPOSE_FILE: compose.yaml:compose.monitoring.yaml
+      GRAFANA_ADMIN_PASSWORD: ci-only-grafana-password-not-for-production
 
     steps:
       - name: Checkout repository
@@ -176,6 +178,113 @@ jobs:
           assert redis_client.ping() is True
           redis_client.close()
           print("Redis is reachable from the API container.")
+          PY
+
+      - name: Verify monitoring collection and dashboard
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import base64
+          import json
+          import os
+          import time
+          from urllib.error import URLError
+          from urllib.parse import urlencode
+          from urllib.request import Request, urlopen
+
+          credentials = (
+              "admin:" + os.environ["GRAFANA_ADMIN_PASSWORD"]
+          ).encode()
+          authorization = (
+              "Basic " + base64.b64encode(credentials).decode()
+          )
+
+          def get_json(url, authenticated=False):
+              headers = {}
+              if authenticated:
+                  headers["Authorization"] = authorization
+              request = Request(url, headers=headers)
+              with urlopen(request, timeout=5) as response:
+                  return json.load(response)
+
+          def query(base_url, expression, authenticated=False):
+              parameters = urlencode({"query": expression})
+              result = get_json(
+                  base_url + "/api/v1/query?" + parameters,
+                  authenticated=authenticated,
+              )
+              assert result["status"] == "success"
+              return result["data"]["result"]
+
+          def verify():
+              result = query(
+                  "http://127.0.0.1:9090",
+                  'up{job="ecommerce-api"}',
+              )
+              assert len(result) == 1, "API scrape target missing"
+              assert float(result[0]["value"][1]) == 1, (
+                  "API scrape target is down"
+              )
+
+              result = query(
+                  "http://127.0.0.1:9090",
+                  'ecommerce_http_requests_total{'
+                  'job="ecommerce-api",route="/health",'
+                  'status_code="200"}',
+              )
+              assert result, "Application metrics not collected"
+              assert float(result[0]["value"][1]) >= 1
+
+              datasource = get_json(
+                  "http://127.0.0.1:3000/api/datasources/uid/prometheus",
+                  authenticated=True,
+              )
+              assert datasource["type"] == "prometheus"
+              assert datasource["url"] == "http://prometheus:9090"
+
+              dashboard = get_json(
+                  "http://127.0.0.1:3000/apis/dashboard.grafana.app/"
+                  "v1/namespaces/default/dashboards/ecommerce-api",
+                  authenticated=True,
+              )
+              assert dashboard["metadata"]["name"] == "ecommerce-api"
+              panels = dashboard["spec"]["panels"]
+              assert {panel["id"] for panel in panels} == {1, 2, 3, 4}
+              assert all(
+                  panel["datasource"]["uid"] == "prometheus"
+                  for panel in panels
+              )
+
+              result = query(
+                  "http://127.0.0.1:3000/api/datasources/"
+                  "proxy/uid/prometheus",
+                  'up{job="ecommerce-api"}',
+                  authenticated=True,
+              )
+              assert len(result) == 1
+              assert float(result[0]["value"][1]) == 1, (
+                  "Grafana cannot query the API scrape metric"
+              )
+
+          deadline = time.monotonic() + 90
+          while True:
+              try:
+                  verify()
+                  break
+              except (AssertionError, URLError) as error:
+                  if time.monotonic() >= deadline:
+                      raise
+                  print(
+                      "Waiting for monitoring readiness:",
+                      type(error).__name__,
+                      flush=True,
+                  )
+                  time.sleep(3)
+
+          print(
+              "Verified API scraping, stored request metrics, "
+              "dashboard provisioning, and Grafana-to-Prometheus queries."
+          )
           PY
 
       - name: Show service status and logs
