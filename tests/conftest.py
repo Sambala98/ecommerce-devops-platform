@@ -4,6 +4,7 @@ from fastapi.testclient import TestClient
 from redis import Redis
 from redis.exceptions import RedisError
 from sqlalchemy import create_engine, delete
+from sqlalchemy.engine import make_url
 from sqlalchemy.orm import sessionmaker
 
 import app.cache.product_cache as product_cache_module
@@ -25,11 +26,28 @@ settings = get_settings()
 TEST_PASSWORD = "TestPassword123!"
 
 
+if not settings.test_database_url:
+    raise RuntimeError(
+        "TEST_DATABASE_URL must be set before running tests."
+    )
+
+test_database_url = make_url(settings.test_database_url)
+application_database_url = make_url(settings.database_url)
+
+if test_database_url.database != "ecommerce_test_db":
+    raise RuntimeError(
+        "Tests require a database named ecommerce_test_db."
+    )
+
+if application_database_url.database == test_database_url.database:
+    raise RuntimeError(
+        "Application and test database names must be different."
+    )
+
 test_engine = create_engine(
-    settings.test_database_url,
+    test_database_url,
     pool_pre_ping=True,
 )
-
 
 TestingSessionLocal = sessionmaker(
     bind=test_engine,
