@@ -6,7 +6,11 @@ COPY requirements.txt .
 
 RUN pip install --no-cache-dir -r requirements.txt
 
+RUN groupadd --system app && useradd --system --gid app --no-create-home app
+
 COPY . .
+
+USER app
 
 EXPOSE 8000
 

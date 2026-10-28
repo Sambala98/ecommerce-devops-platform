@@ -7,10 +7,10 @@ class Settings(BaseSettings):
     app_name: str = "E-Commerce DevOps Platform"
     app_version: str = "1.0.0"
     app_environment: str = "development"
-    debug: bool = True
+    debug: bool = False
 
     database_url: str
-    test_database_url: str
+    test_database_url: str | None = None
 
     redis_url: str = "redis://localhost:6379/0"
     redis_cache_ttl: int = 300
