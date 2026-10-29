@@ -4,6 +4,8 @@ umask 077
 
 BACKUP_DIR="${BACKUP_DIR:-/home/ec2-user/backups/ecommerce}"
 DB_CONTAINER="${DB_CONTAINER:-ecommerce-devops-platform-postgres-1}"
+S3_BACKUP_URI="${S3_BACKUP_URI:-}"
+AWS_REGION="${AWS_REGION:-us-east-1}"
 
 for command in docker flock mktemp date find; do
     command -v "$command" >/dev/null || {
@@ -11,6 +13,13 @@ for command in docker flock mktemp date find; do
         exit 1
     }
 done
+
+if [[ -n "$S3_BACKUP_URI" ]]; then
+    command -v aws >/dev/null || {
+        echo "AWS CLI is required for S3 uploads." >&2
+        exit 1
+    }
+fi
 
 install -d -m 700 "$BACKUP_DIR"
 
@@ -44,7 +53,18 @@ temporary_file=""
 
 echo "Backup created and archive listing checked: $backup_file"
 
-# Remove this script's backups aged at least seven days.
-# Cleanup occurs only after a new backup succeeds.
+if [[ -n "$S3_BACKUP_URI" ]]; then
+    backup_name="${backup_file##*/}"
+    destination="${S3_BACKUP_URI%/}/${backup_name}"
+
+    aws s3 cp "$backup_file" "$destination" \
+        --region "$AWS_REGION" \
+        --sse AES256 \
+        --only-show-errors
+
+    echo "Backup uploaded: $destination"
+fi
+
+# Cleanup runs only after backup and any configured upload succeed.
 find "$BACKUP_DIR" -maxdepth 1 -type f \
     -name 'ecommerce_db-*.dump' -mtime +6 -print -delete
