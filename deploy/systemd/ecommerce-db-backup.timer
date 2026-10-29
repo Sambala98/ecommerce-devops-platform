@@ -1,0 +1,11 @@
+[Unit]
+Description=Schedule daily E-Commerce database backups
+
+[Timer]
+OnCalendar=*-*-* 08:00:00 UTC
+Persistent=true
+RandomizedDelaySec=5min
+Unit=ecommerce-db-backup.service
+
+[Install]
+WantedBy=timers.target
