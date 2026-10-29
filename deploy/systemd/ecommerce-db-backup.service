@@ -1,0 +1,17 @@
+[Unit]
+Description=Back up the E-Commerce PostgreSQL database
+Requires=docker.service
+After=docker.service
+StartLimitIntervalSec=15min
+StartLimitBurst=5
+
+[Service]
+Type=oneshot
+User=root
+UMask=0077
+Environment=BACKUP_DIR=/var/backups/ecommerce
+Environment=DB_CONTAINER=ecommerce-devops-platform-postgres-1
+ExecStart=/usr/bin/bash /usr/local/libexec/ecommerce/backup_database.sh
+TimeoutStartSec=15min
+Restart=on-failure
+RestartSec=60s
