@@ -11,6 +11,8 @@ User=root
 UMask=0077
 Environment=BACKUP_DIR=/var/backups/ecommerce
 Environment=DB_CONTAINER=ecommerce-devops-platform-postgres-1
+Environment=S3_BACKUP_URI=s3://sudheer-ecommerce-backups-20261029/postgres
+Environment=AWS_REGION=us-east-1
 ExecStart=/usr/bin/bash /usr/local/libexec/ecommerce/backup_database.sh
 TimeoutStartSec=15min
 Restart=on-failure
