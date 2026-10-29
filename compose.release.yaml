@@ -1,0 +1,5 @@
+services:
+  api:
+    image: ${API_IMAGE:?Set API_IMAGE to the selected release image}
+    build: !reset null
+    pull_policy: missing
