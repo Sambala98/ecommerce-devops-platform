@@ -409,3 +409,35 @@ Remaining verification and operations work:
 - Configure and test meaningful failure notifications.
 
 - Keep deployment and recovery instructions current.
+
+## Deployment verification — 2026-10-30
+
+### S3 recovery test
+
+Downloaded the populated recovery backup from S3 and restored it into
+the isolated ecommerce_recovery_restored database.
+
+Verified these product values:
+
+| SKU | Price | Stock | Reserved |
+| --- | ---: | ---: | ---: |
+| RECOVERY-CHECK-KEYBOARD | 29.99 | 10 | 2 |
+| RECOVERY-CHECK-MOUSE | 14.50 | 20 | 0 |
+
+Deleted both temporary recovery databases after verification.
+The live ecommerce_db database was not modified by this test.
+
+### Uptime alert test
+
+Configured UptimeRobot to monitor:
+https://ecommerce-project.duckdns.org/health/database
+
+Stopped the API container and received the downtime email.
+Restarted the API container and confirmed the HTTPS endpoint returned:
+{"status":"healthy","database":"connected"}
+
+Recovery email delivery has not yet been confirmed.
+
+Pause the monitor during intentional EC2 shutdowns.
+After starting EC2, update DuckDNS if the public IP changes,
+verify API health, and resume monitoring.
